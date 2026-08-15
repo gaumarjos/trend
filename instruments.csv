@@ -1,0 +1,21 @@
+Micro, Regular, Exchange, in_strategy, Note
+MES  , ES     , CME     , 0, S&P 500 index -- Micro E-mini / E-mini
+MNQ  , NQ     , CME     , 0, Nasdaq-100 index -- Micro E-mini / E-mini
+M2K  , RTY    , CME     , 0, Russell 2000 index -- Micro E-mini / E-mini
+MYM  , YM     , CBOT    , 0, Dow Jones Industrial Average -- Micro E-mini / E-mini ($5)
+2YY  , ZT     , CBOT    , 0, 2-Year Treasury -- Yield future (micro only) / Note future (price-based)
+10Y  , ZN     , CBOT    , 0, 10-Year Treasury -- Yield future (micro only) / Note future (price-based)
+30Y  , ZB     , CBOT    , 0, 30-Year Treasury -- Yield future (micro only) / Bond future (price-based)
+MCL  , CL     , NYMEX   , 0, WTI Crude Oil -- Micro / Standard
+MNG  , NG     , NYMEX   , 0, Henry Hub Natural Gas -- Micro / Standard
+MHG  , HG     , COMEX   , 0, Copper -- Micro / Standard
+MZW  , ZW     , CBOT    , 0, Wheat -- Micro / Standard
+MZS  , ZS     , CBOT    , 0, Soybean -- Micro / Standard
+MZC  , ZC     , CBOT    , 0, Corn -- Micro / Standard
+MGC  , GC     , COMEX   , 0, Gold -- Micro / Standard
+SIL  , SI     , COMEX   , 0, Silver -- Micro / Standard
+M6E  , 6E     , CME     , 0, EUR/USD -- Micro / Standard
+M6B  , 6B     , CME     , 0, GBP/USD -- Micro / Standard
+M6A  , 6A     , CME     , 0, AUD/USD -- Micro / Standard
+     , 6J     , CME     , 0, JPY/USD -- Standard
+     , 6S     , CME     , 0, CHF/USD -- Standard
