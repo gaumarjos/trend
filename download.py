@@ -10,11 +10,20 @@ Settings > Enable ActiveX and Socket Clients), listening on PORT below.
 import csv
 import time
 from collections import deque
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 from ib_async import IB, Contract, Future, util
+
+NY_TZ = ZoneInfo('America/New_York')
+
+
+def log(*args, **kwargs):
+    """print(), prefixed with the current time in America/New_York."""
+    timestamp = datetime.now(NY_TZ).strftime('%Y-%m-%d %H:%M:%S %Z')
+    print(f'[{timestamp}]', *args, **kwargs)
 
 HOST = '127.0.0.1'
 PORT = 7497          # 7497 = TWS paper, 7496 = TWS live, 4002/4001 = Gateway
@@ -53,21 +62,28 @@ MIN_REQUEST_INTERVAL = 1.0
 _request_times = deque()
 
 
-def throttle():
-    """Block until issuing another request won't breach IB's pacing limit."""
+def throttle(ib):
+    """
+    Block until issuing another request won't breach IB's pacing limit.
+    Uses ib.sleep(), not time.sleep() -- ib_async is asyncio-based under
+    the hood, and a plain time.sleep() blocks it from draining the socket
+    while we wait, which can queue up incoming messages and deliver them
+    in a burst after an unrelated request's reqId has already been cleaned
+    up (surfaces as a KeyError deep in ib_async's wrapper).
+    """
     now = time.time()
     while _request_times and now - _request_times[0] > WINDOW_SECONDS:
         _request_times.popleft()
 
     if len(_request_times) >= MAX_REQUESTS_PER_WINDOW:
         wait = WINDOW_SECONDS - (now - _request_times[0]) + 0.5
-        print(f'\n  ...pacing limit reached, waiting {wait:.0f}s')
-        time.sleep(wait)
+        log(f'\n  ...pacing limit reached, waiting {wait:.0f}s')
+        ib.sleep(wait)
         now = time.time()
         while _request_times and now - _request_times[0] > WINDOW_SECONDS:
             _request_times.popleft()
     elif _request_times and now - _request_times[-1] < MIN_REQUEST_INTERVAL:
-        time.sleep(MIN_REQUEST_INTERVAL - (now - _request_times[-1]))
+        ib.sleep(MIN_REQUEST_INTERVAL - (now - _request_times[-1]))
 
     _request_times.append(time.time())
 
@@ -117,7 +133,7 @@ def discover_contracts(ib, symbol, exchange):
         found[d.contract.conId] = d.contract
 
     months = candidate_months()
-    print(f'  scanning {len(months)} candidate contract months...', end=' ', flush=True)
+    log(f'  scanning {len(months)} candidate contract months...', end=' ', flush=True)
     for yyyymm in months:
         probe = Future(symbol=symbol, exchange=exchange,
                         lastTradeDateOrContractMonth=yyyymm, includeExpired=True)
@@ -125,7 +141,7 @@ def discover_contracts(ib, symbol, exchange):
             details = ib.reqContractDetails(probe)
         except Exception:
             details = []
-        time.sleep(0.25)
+        ib.sleep(0.25)
         for d in details:
             found[d.contract.conId] = d.contract
     print(f'{len(found)} contracts found')
@@ -174,7 +190,7 @@ def contracts_from_manifest(ib, existing_manifest, symbol):
 
 def req_bars_with_retry(ib, contract, end):
     for attempt in range(EMPTY_RETRIES + 1):
-        throttle()
+        throttle(ib)
         bars = ib.reqHistoricalData(
             contract,
             endDateTime=end,
@@ -186,7 +202,7 @@ def req_bars_with_retry(ib, contract, end):
         )
         if bars:
             return bars
-        time.sleep(2.0 * (attempt + 1))
+        ib.sleep(2.0 * (attempt + 1))
     return []
 
 
@@ -233,6 +249,11 @@ def fetch_incremental_history(ib, contract, since_date):
         return None
 
     df = util.df(bars)
+    # util.df() on daily bars gives plain datetime.date objects (IB's daily
+    # bars carry no time-of-day), while since_date -- read back from a CSV
+    # via parse_dates -- is a pandas Timestamp. Comparing the two directly
+    # raises a TypeError, so normalize before comparing.
+    df['date'] = pd.to_datetime(df['date'])
     if since_date is not None:
         df = df[df['date'] > since_date]
     df = df.drop_duplicates(subset='date').sort_values('date').reset_index(drop=True)
@@ -244,15 +265,23 @@ def main():
     ib.connect(HOST, PORT, clientId=CLIENT_ID, readonly=True)
 
     instruments = load_instruments()
-    manifest_rows = []
 
     manifest_path = DATA_DIR / 'manifest.csv'
     existing_manifest = pd.read_csv(manifest_path) if manifest_path.exists() else None
 
+    # Seed from whatever's already on record, so a run that dies partway
+    # through never erases the manifest for symbols it already finished --
+    # each symbol's rows get replaced in place as it's processed below, and
+    # the file is rewritten after every symbol, not just once at the end.
+    manifest_rows = existing_manifest.to_dict('records') if existing_manifest is not None else []
+
+    def save_manifest():
+        pd.DataFrame(manifest_rows).to_csv(manifest_path, index=False)
+
     for row in instruments:
         symbol = row['symbol']
         exchange = row['exchange']
-        print(f'\n=== {symbol} ({exchange}) ===')
+        log(f'\n=== {symbol} ({exchange}) ===')
 
         out_dir = DATA_DIR / symbol
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -261,16 +290,17 @@ def main():
             if needs_discovery(existing_manifest, symbol):
                 contracts = discover_contracts(ib, symbol, exchange)
             else:
-                print('  known contracts still have runway, skipping discovery')
+                log('  known contracts still have runway, skipping discovery')
                 contracts = contracts_from_manifest(ib, existing_manifest, symbol)
         except Exception as e:
-            print(f'  contract discovery failed: {e}')
+            log(f'  contract discovery failed: {e}')
             continue
 
         if not contracts:
-            print('  no contracts found')
+            log('  no contracts found')
             continue
 
+        symbol_rows = []
         for contract in contracts:
             local = contract.localSymbol or f'{symbol}{contract.lastTradeDateOrContractMonth}'
             out_file = out_dir / f'{local}.csv'
@@ -284,8 +314,8 @@ def main():
                 needs_topup = still_active and (last_date is None or last_date.date() < date.today())
 
                 if needs_topup:
-                    print(f'  {local}  (expiry {contract.lastTradeDateOrContractMonth}) '
-                          f'topping up since {last_date}...', end=' ', flush=True)
+                    log(f'  {local}  (expiry {contract.lastTradeDateOrContractMonth}) '
+                        f'topping up since {last_date}...', end=' ', flush=True)
 
                     new_bars = fetch_incremental_history(ib, contract, since_date=last_date)
                     if new_bars is not None and not new_bars.empty:
@@ -295,13 +325,13 @@ def main():
                     else:
                         print('no new bars')
                 elif df.empty:
-                    print(f'  {local}  (expiry {contract.lastTradeDateOrContractMonth}) '
-                          f'no trade history, contract now expired, nothing more to fetch')
+                    log(f'  {local}  (expiry {contract.lastTradeDateOrContractMonth}) '
+                        f'no trade history, contract now expired, nothing more to fetch')
                 else:
-                    print(f'  {local}  (expiry {contract.lastTradeDateOrContractMonth}) '
-                          f'up to date, {len(df)} bars, skipping')
+                    log(f'  {local}  (expiry {contract.lastTradeDateOrContractMonth}) '
+                        f'up to date, {len(df)} bars, skipping')
             else:
-                print(f'  {local}  (expiry {contract.lastTradeDateOrContractMonth}) ...', end=' ', flush=True)
+                log(f'  {local}  (expiry {contract.lastTradeDateOrContractMonth}) ...', end=' ', flush=True)
 
                 df = fetch_full_history(ib, contract)
                 if df is None:
@@ -317,7 +347,7 @@ def main():
                 else:
                     print(f'{len(df)} bars, {df["date"].min()} -> {df["date"].max()}')
 
-            manifest_rows.append({
+            symbol_rows.append({
                 'instrument': symbol,
                 'localSymbol': local,
                 'conId': contract.conId,
@@ -330,9 +360,10 @@ def main():
                 'lastDate': str(df['date'].max()) if not df.empty else '',
             })
 
-    manifest_df = pd.DataFrame(manifest_rows)
-    manifest_df.to_csv(DATA_DIR / 'manifest.csv', index=False)
-    print(f'\nDone. Manifest written to {DATA_DIR / "manifest.csv"}')
+        manifest_rows = [r for r in manifest_rows if r['instrument'] != symbol] + symbol_rows
+        save_manifest()
+
+    log(f'\nDone. Manifest written to {manifest_path}')
 
     ib.disconnect()
 

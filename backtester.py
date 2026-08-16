@@ -98,6 +98,9 @@ if __name__ == '__main__':
     plt.show()
     '''
 
+
+    instrument = 'MZS'
     #_, vote = tsmom.voting(instrument, date)
     #print(vote)
     sweep(instrument, '2024-01-01', '2026-08-14', plot=True)
+    #sweep(instrument, '2024-01-01', '2026-08-14', plot=True)
