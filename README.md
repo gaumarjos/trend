@@ -3,11 +3,6 @@
 Just another strategy backtester, for now.
 
 
-## Inspired by
-- https://www.thetabruv.com/en/docs/esecuzione/bot-cta/
-- https://www.thetabruv.com/en/docs/risorse/
-
-
 ## Repo structure
 
 | File | Scope | Run with |
